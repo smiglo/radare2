@@ -14,7 +14,7 @@ R_API bool r_bin_lang_msvc(RBinFile *binfile) {
 	bool hascxx = false;
 	if (info) {
 		r_list_foreach (o->symbols, iter, sym) {
-			if (is_cxx_symbol (sym->name)) {
+			if (sym->name && is_cxx_symbol (sym->name)) {
 				hascxx = true;
 				break;
 			}

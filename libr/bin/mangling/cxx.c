@@ -45,6 +45,9 @@ R_API bool r_bin_lang_cxx(RBinFile *binfile) {
 	if (!hascxx) {
 		hascxx = r_bin_is_cxx (binfile);
 		r_list_foreach (o->symbols, iter, sym) {
+			if (!sym->name) {
+				continue;
+			}
 			if (is_cxx_symbol (sym->name)) {
 				hascxx = true;
 				break;

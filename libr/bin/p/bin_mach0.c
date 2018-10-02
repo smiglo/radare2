@@ -266,6 +266,11 @@ static void _handle_arm_thumb(struct MACH0_(obj_t) *bin, RBinSymbol **p) {
 	}
 }
 
+static void pull_symbol(RBinObject *obj, RBinSymbol *sym) {
+	eprintf ("pull %s\n", sym->name);
+	r_list_append (obj->symbols, sym);
+}
+
 static RList* symbols(RBinFile *bf) {
 	struct MACH0_(obj_t) *bin;
 	int i;
@@ -284,6 +289,12 @@ static RList* symbols(RBinFile *bf) {
 	}
 	bool isStripped = false;
 	wordsize = MACH0_(get_bits) (obj->bin_obj);
+	// NEW CODE
+	obj->symbols = ret;
+	MACH0_(pull_symbols)(obj->bin_obj, pull_symbol, obj);
+return ret;
+
+	// OLD CODE
 	if (!(symbols = MACH0_(get_symbols) (obj->bin_obj))) {
 		return ret;
 	}

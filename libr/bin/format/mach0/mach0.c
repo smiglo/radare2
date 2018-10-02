@@ -1733,7 +1733,7 @@ static ut64 get_text_base(struct MACH0_(obj_t)* bin) {
 }
 #endif
 
-static int inSymtab(SdbHt *hash, struct symbol_t *symbols, const char *name, ut64 addr) {
+static int inSymtab(SdbHt *hash, const char *name, ut64 addr) {
 	bool found;
 	const char *key = sdb_fmt ("%s.%"PFMT64x, name, addr);
 	(void)sdb_ht_find (hash, key, &found);
@@ -1742,6 +1742,162 @@ static int inSymtab(SdbHt *hash, struct symbol_t *symbols, const char *name, ut6
 	}
 	sdb_ht_insert (hash, key, "1");
 	return false;
+}
+
+void MACH0_(pull_symbols)(struct MACH0_(obj_t)* mo, RBinSymbolCallback cb, void *user) {
+	const char *symstr;
+	int j, s, stridx, symbols_size, symbols_count;
+	ut32 to, from, i;
+	//ut64 text_base = get_text_base (bin);
+
+	if (!mo || !mo->symtab || !mo->symstr) {
+		return;
+	}
+	/* parse symbol table */
+	/* parse dynamic symbol table */
+	symbols_count = (mo->dysymtab.nextdefsym + \
+			mo->dysymtab.nlocalsym + \
+			mo->dysymtab.nundefsym );
+	symbols_count += mo->nsymtab;
+	//symbols_count = mo->nsymtab;
+	symbols_size = (symbols_count + 1) * 2 * sizeof (struct symbol_t);
+
+	if (symbols_size < 1) {
+		return;
+	}
+	SdbHt *hash = sdb_ht_new ();
+	for (s = j = 0; s < 2; s++) {
+		switch (s) {
+		case 0:
+			from = mo->dysymtab.iextdefsym;
+			to = from + mo->dysymtab.nextdefsym;
+			break;
+		case 1:
+			from = mo->dysymtab.ilocalsym;
+			to = from + mo->dysymtab.nlocalsym;
+			break;
+#if NOT_USED
+		case 2:
+			from = mo->dysymtab.iundefsym;
+			to = from + mo->dysymtab.nundefsym;
+			break;
+#endif
+		}
+		if (from == to) {
+			continue;
+		}
+		from = R_MIN (R_MAX (0, from), symbols_size / sizeof (struct symbol_t));
+		to = R_MIN (to , symbols_size / sizeof (struct symbol_t));
+		to = R_MIN (to, mo->nsymtab);
+		int maxsymbols = symbols_size / sizeof (struct symbol_t);
+		if (to > 0x500000) {
+			eprintf ("WARNING: corrupted mach0 header: symbol table is too big %d\n", to);
+			sdb_ht_free (hash);
+			return;
+		}
+		if (symbols_count >= maxsymbols) {
+			symbols_count = maxsymbols - 1;
+		}
+		for (i = from; i < to && j < symbols_count; i++, j++) {
+			RBinSymbol *sym = R_NEW0 (RBinSymbol);
+			sym->paddr = addr_to_offset (mo, mo->symtab[i].n_value);
+			sym->vaddr = mo->symtab[i].n_value;
+			sym->size = 0; /* TODO: Is it anywhere? */
+			if (mo->symtab[i].n_type & N_EXT) {
+				// sym->type = R_BIN_MACH0_SYMBOL_TYPE_EXT;
+				sym->type = "ext";
+			} else {
+				//sym->type = R_BIN_MACH0_SYMBOL_TYPE_LOCAL;
+				sym->type = "local";
+			}
+			stridx = mo->symtab[i].n_strx;
+			if (stridx >= 0 && stridx < mo->symstrlen) {
+				symstr = (char*)mo->symstr + stridx;
+			} else {
+				symstr = "???";
+			}
+			{
+				int i = 0;
+				int len = 0;
+				len = mo->symstrlen - stridx;
+				if (len > 0) {
+					for (i = 0; i < len; i++) {
+						if ((ut8)(symstr[i] & 0xff) == 0xff || !symstr[i]) {
+							len = i;
+							break;
+						}
+					}
+					char *symstr_dup = NULL;
+					if (len > 0) {
+						symstr_dup = r_str_ndup (symstr, len);
+					}
+					if (!symstr_dup) {
+						sym->name = NULL; //[0] = 0;
+					} else {
+						sym->name = symstr_dup;
+						r_str_filter (sym->name, -1);
+					}
+					free (symstr_dup);
+				} else {
+					sym->name = NULL; // [0] = 0;
+				}
+			}
+			if (inSymtab (hash, sym->name, sym->vaddr)) {
+				sym->name = NULL;
+				j--;
+			}
+			cb (user, sym);
+		}
+	}
+#if 0
+	to = R_MIN ((ut32)mo->nsymtab, bin->dysymtab.iundefsym + bin->dysymtab.nundefsym);
+	for (i = mo->dysymtab.iundefsym; i < to; i++) {
+		if (j > symbols_count) {
+			bprintf ("mach0-get-symbols: error\n");
+			break;
+		}
+		if (parse_import_stub(mo, &symbols[j], i)) {
+			symbols[j++].last = 0;
+		}
+	}
+#endif
+
+#if 1
+// symtab is wrongly parsed and produces dupped syms with incorrect vaddr */
+	for (i = 0; i < mo->nsymtab; i++) {
+		struct MACH0_(nlist) *st = &mo->symtab[i];
+		stridx = st->n_strx;
+		if (stridx >= 0 && stridx < mo->symstrlen) {
+			symstr = (char*)mo->symstr + stridx;
+		} else {
+			symstr = "???";
+		}
+		// 0 is for imports
+		// 1 is for symbols
+		// 2 is for func.eh (exception handlers?)
+		int section = st->n_sect;
+		if (section == 1 && j < symbols_count) { // text ??st->n_type == 1)
+			RBinSymbol *sym = R_NEW0 (RBinSymbol);
+			/* is symbol */
+			sym->vaddr = st->n_value; // + text_base;
+			sym->paddr = addr_to_offset (mo, sym->vaddr);
+			sym->size = 0; /* find next symbol and crop */
+			if (st->n_type & N_EXT) {
+				sym->type = strdup ("NOTYPE"); //R_BIN_MACH0_SYMBOL_TYPE_EXT;
+			} else {
+				sym->type = strdup ("FUNC"); // R_BIN_MACH0_SYMBOL_TYPE_LOCAL;
+			}
+			sym->name = r_str_ndup (symstr, R_BIN_MACH0_STRING_LENGTH);
+			if (inSymtab (hash, sym->name, sym->vaddr)) {
+				sym->name = NULL;
+			} else {
+				j++;
+			}
+			cb (user, sym);
+		}
+	}
+#endif
+	sdb_ht_free (hash);
 }
 
 struct symbol_t* MACH0_(get_symbols)(struct MACH0_(obj_t)* bin) {
@@ -1854,7 +2010,7 @@ struct symbol_t* MACH0_(get_symbols)(struct MACH0_(obj_t)* bin) {
 				}
 				symbols[j].last = 0;
 			}
-			if (inSymtab (hash, symbols, symbols[j].name, symbols[j].addr)) {
+			if (inSymtab (hash, symbols[j].name, symbols[j].addr)) {
 				symbols[j].name[0] = 0;
 				j--;
 			}
@@ -1902,7 +2058,7 @@ struct symbol_t* MACH0_(get_symbols)(struct MACH0_(obj_t)* bin) {
 			strncpy (symbols[j].name, symstr, R_BIN_MACH0_STRING_LENGTH);
 			symbols[j].name[R_BIN_MACH0_STRING_LENGTH - 1] = 0;
 			symbols[j].last = 0;
-			if (inSymtab (hash, symbols, symbols[j].name, symbols[j].addr)) {
+			if (inSymtab (hash, symbols[j].name, symbols[j].addr)) {
 				symbols[j].name[0] = 0;
 			} else {
 				j++;
